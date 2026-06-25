@@ -332,7 +332,7 @@
     <div style="position:absolute; bottom:18px; right:22px; z-index:2;
       font-family:'Share Tech Mono',monospace; font-size:13px;
       color:rgba(255,255,255,0.35); letter-spacing:1px; pointer-events:none;">
-      TankWar v0.26.5
+      TankWar v0.27.0
     </div>
 
     <!-- Top-left: settings + profile -->
@@ -1122,6 +1122,29 @@ const HOUSE_COLORS = [0x8b6347, 0xc8a97a, 0x7a8c7a, 0xb5956a, 0x9aaa90, 0xcfb98c
 const ROOF_COLORS  = [0x7a3a2a, 0xaa5533, 0x4a5a4a, 0x884433, 0x3a4a3a, 0x995522];
 const CAR_COLORS   = [0xdd3333, 0x3399dd, 0xddcc33, 0x33cc77, 0xff7722, 0xcc33cc];
 
+// Builds a 4-sided pyramid roof BufferGeometry that exactly matches a
+// rectangular footprint (w × d), with optional eaves overhang.
+// Apex sits at local Y = h, base sits at local Y = 0.
+function makePyramidRoofGeometry(w, d, h, overhang) {
+  const hw = w / 2 + overhang;
+  const hd = d / 2 + overhang;
+  const positions = new Float32Array([
+    // 4 side (sloped) faces — apex + two base corners each, wound so
+    // normals face outward/upward
+    0, h, 0,    hw, 0, -hd,   -hw, 0, -hd,   // back slope
+    0, h, 0,    hw, 0,  hd,    hw, 0, -hd,   // right slope
+    0, h, 0,   -hw, 0,  hd,    hw, 0,  hd,   // front slope
+    0, h, 0,   -hw, 0, -hd,   -hw, 0,  hd,   // left slope
+    // underside (2 triangles), so no gap is visible from below
+    -hw, 0, -hd,   hw, 0, hd,   -hw, 0, hd,
+    -hw, 0, -hd,   hw, 0, -hd,  hw, 0, hd,
+  ]);
+  const geo = new THREE.BufferGeometry();
+  geo.setAttribute('position', new THREE.BufferAttribute(positions, 3));
+  geo.computeVertexNormals();
+  return geo;
+}
+
 function buildHouse(wx, wz, w, d, wallH, roofH, wallColor, roofColor, rotY) {
   const group = new THREE.Group();
 
@@ -1147,15 +1170,42 @@ function buildHouse(wx, wz, w, d, wallH, roofH, wallColor, roofColor, rotY) {
     group.add(wm);
   });
 
-  // Roof (triangular prism via CylinderGeometry with 4 radial segments rotated)
-  // A BoxGeometry scaled into a thin wedge works cleanly in Three.js r128
-  const roofMat = new THREE.MeshLambertMaterial({ color: roofColor });
-  const roofGeo = new THREE.CylinderGeometry(0, Math.sqrt(w*w + d*d) / 2, roofH, 4, 1);
-  const roof    = new THREE.Mesh(roofGeo, roofMat);
-  roof.rotation.y = Math.PI / 4; // align pyramid corners with walls
-  roof.position.y = wallH + roofH / 2;
+  // Front door (small dark recessed panel, centred on the front face)
+  const doorH = Math.min(wallH * 0.78, 1.7);
+  const doorMat = new THREE.MeshLambertMaterial({ color: 0x3a2a1f });
+  const doorGeo = new THREE.BoxGeometry(0.62, doorH, 0.06);
+  const door = new THREE.Mesh(doorGeo, doorMat);
+  door.position.set(0, doorH / 2, d / 2 + 0.02);
+  group.add(door);
+
+  // Roof — custom pyramid sized exactly to the wall footprint (with a
+  // small eaves overhang), so it always sits flush and even regardless
+  // of how non-square the house is. Replaces the old circular-cone hack
+  // which only looked right when w === d.
+  const overhang = Math.min(w, d) * 0.10 + 0.06;
+  const roofMat  = new THREE.MeshLambertMaterial({ color: roofColor });
+  const roofGeo  = makePyramidRoofGeometry(w, d, roofH, overhang);
+  const roof     = new THREE.Mesh(roofGeo, roofMat);
+  roof.position.y = wallH;
   roof.castShadow = true;
+  roof.receiveShadow = true;
   group.add(roof);
+
+  // Thin trim board where roof meets wall, hides any seam and adds detail
+  const trimMat = new THREE.MeshLambertMaterial({ color: roofColor });
+  const trimGeo = new THREE.BoxGeometry(w + overhang * 1.6, 0.08, d + overhang * 1.6);
+  const trim = new THREE.Mesh(trimGeo, trimMat);
+  trim.position.y = wallH + 0.04;
+  group.add(trim);
+
+  // Chimney — small offset block poking through one roof slope
+  const chimW = Math.min(w, d) * 0.16;
+  const chimH = roofH * 0.95;
+  const chimMat = new THREE.MeshLambertMaterial({ color: 0x6b5a52 });
+  const chimney = new THREE.Mesh(new THREE.BoxGeometry(chimW, chimH, chimW), chimMat);
+  chimney.position.set(w * 0.2, wallH + chimH / 2 + roofH * 0.18, -d * 0.18);
+  chimney.castShadow = true;
+  group.add(chimney);
 
   group.position.set(wx, 0, wz);
   if (rotY) group.rotation.y = rotY;
@@ -1421,6 +1471,24 @@ function updateTrackMarks(dt, moving) {
     }
   }
 }
+
+// ── Per-class projectile colors ───────────────────────────
+// Player tank classes: scout=yellow, classic=green, heavy=gray, bruiser(berserk)=orange
+const PLAYER_PROJ_COLOR = {
+  scout:   0xffee44,
+  classic: 0x33ff66,
+  heavy:   0xaaaaaa,
+  bruiser: 0xff8833,
+};
+// Enemy bot classes: scout=yellow, standard/classic=red, heavy=gray, bruiser(berserk)=orange
+const ENEMY_PROJ_COLOR = {
+  scout:    0xffee00,
+  standard: 0xff4444,
+  classic:  0xff4444,
+  heavy:    0xaaaaaa,
+  bruiser:  0xff8833,
+  artillery:0xaa66ff,
+};
 
 // ── Materials (shared) ────────────────────────────────────
 const mats = {
@@ -2990,7 +3058,7 @@ function updateEnemies(dt) {
         ).normalize();
 
         const geo  = new THREE.SphereGeometry(e.cls === 'heavy' ? 0.20 : 0.12, 6, 6);
-        const projColor = e.cls === 'scout' ? 0xffee00 : 0xff4444;
+        const projColor = ENEMY_PROJ_COLOR[e.cls] || 0xff4444;
         const mat  = new THREE.MeshLambertMaterial({ color: projColor, emissive: projColor, emissiveIntensity: 0.8 });
         const mesh = new THREE.Mesh(geo, mat);
         mesh.position.copy(projMuzzle);
@@ -3151,7 +3219,9 @@ function fireProjectile() {
 
   // ── Spawn projectile ──────────────────────────────────────
   const geo  = new THREE.SphereGeometry(0.12, 6, 6);
-  const mesh = new THREE.Mesh(geo, mats.projectile);
+  const projColorPlayer = PLAYER_PROJ_COLOR[playerTankClass] || 0xffee55;
+  const projMatPlayer = new THREE.MeshLambertMaterial({ color: projColorPlayer, emissive: projColorPlayer, emissiveIntensity: 1.2 });
+  const mesh = new THREE.Mesh(geo, projMatPlayer);
   mesh.position.copy(muzzleTip);
   mesh.castShadow = false;
   scene.add(mesh);
