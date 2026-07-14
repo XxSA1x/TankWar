@@ -1,6 +1,50 @@
 <!DOCTYPE html>
 <html lang="en">
 <head>
+  <!-- ═══════════════════════════════════════════════════════
+       DIAGNOSTIC LOGGING — temporary, mobile-only. Catches JS
+       errors, failed resource loads (e.g. the Three.js CDN
+       include), and reports key checkpoints to an on-screen panel
+       so we can see exactly what's happening on a phone where
+       there's no dev console. Placed first so it catches errors
+       from anything that loads after it, including the CDN
+       script tag. Safe to remove once the black-screen issue
+       is confirmed fixed.
+       ═══════════════════════════════════════════════════════ -->
+  <script>
+  (function() {
+    window.__dbgLines = [];
+    window.__dbgLog = function(s) {
+      try {
+        var t = new Date().toISOString().slice(11, 19);
+        window.__dbgLines.push('[' + t + '] ' + s);
+        if (window.__dbgLines.length > 22) window.__dbgLines.shift();
+        window.__dbgRender();
+      } catch (e) {}
+    };
+    window.__dbgStatusText = '';
+    window.__dbgStatus = function(s) {
+      try { window.__dbgStatusText = s; window.__dbgRender(); } catch (e) {}
+    };
+    window.__dbgRender = function() {
+      var el = document.getElementById('debug-panel');
+      if (!el) return;
+      el.textContent = 'STATUS: ' + window.__dbgStatusText + '\n' + window.__dbgLines.join('\n');
+    };
+    window.addEventListener('error', function(e) {
+      if (e.target && e.target !== window && e.target.tagName) {
+        // Resource load failure (script/img/etc) — doesn't bubble, caught here via capture
+        window.__dbgLog('RESOURCE FAILED TO LOAD: ' + (e.target.src || e.target.href || e.target.tagName));
+      } else {
+        window.__dbgLog('JS ERROR: ' + e.message + ' (' + (e.filename || '').split('/').pop() + ':' + e.lineno + ':' + e.colno + ')');
+      }
+    }, true);
+    window.addEventListener('unhandledrejection', function(e) {
+      window.__dbgLog('UNHANDLED PROMISE REJECTION: ' + (e.reason && e.reason.message ? e.reason.message : e.reason));
+    });
+    window.__dbgLog('boot @ ' + location.protocol + '//' + location.host + ' | ' + navigator.userAgent.slice(0, 70));
+  })();
+  </script>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0"/>
   <title>TANK WAR</title>
@@ -108,6 +152,16 @@
       color: rgba(0,255,204,0.4);
       pointer-events: none;
     }
+    /* The canvas draws at a fixed 170×170 internal resolution
+       (see width/height attributes on the element) — without this,
+       shrinking #minimap's CSS size (as done on mobile) just clips
+       the canvas via overflow:hidden instead of scaling it down,
+       showing only a cropped corner of the full picture. */
+    #minimap-canvas {
+      display: block;
+      width: 100%;
+      height: 100%;
+    }
 
     /* Bottom: controls legend */
     #controls {
@@ -185,6 +239,335 @@
       transition: opacity 0.05s;
     }
 
+    /* ══════════════════════════════════════════════════════
+       Mobile touch controls — only shown on phones (JS adds
+       the 'mobile-mode' class to <body> after feature-detecting
+       touch input). Desktop is completely unaffected.
+       ══════════════════════════════════════════════════════ */
+    #mobile-controls {
+      position: fixed;
+      inset: 0;
+      z-index: 16;
+      display: none;
+      pointer-events: none;
+    }
+    body.mobile-mode #mobile-controls { display: block; }
+    body.mobile-mode #controls { display: none; } /* hide kbd/mouse legend */
+
+    /* ── Mobile HUD compaction ──────────────────────────────
+       Phones in landscape are often extremely short (well under
+       300px of usable height once browser chrome is subtracted),
+       so the desktop panel layout (170px minimap + ammo panel
+       stacked below it + health bar + speedometer, all in the
+       right column) simply doesn't fit and overlaps. Shrink and
+       spread things out instead of stacking them. */
+    body.mobile-mode #score-panel {
+      top: 6px; left: 6px;
+      padding: 5px 10px;
+    }
+    body.mobile-mode #score-panel .value { font-size: 22px; }
+    body.mobile-mode #score-panel .label,
+    body.mobile-mode #score-panel .sub { font-size: 8px; }
+
+    /* Ammo panel moves to the top-center — a slim, easy-to-read
+       readout clear of the joystick and fire button. */
+    body.mobile-mode #ammo-panel {
+      top: 6px; left: 50%; right: auto; bottom: auto;
+      transform: translateX(-50%);
+      padding: 4px 10px;
+    }
+    body.mobile-mode #ammo-panel .value { font-size: 20px; }
+    body.mobile-mode #ammo-panel .label { font-size: 8px; }
+
+    body.mobile-mode #minimap {
+      top: 6px; right: 6px;
+      width: 84px; height: 84px;
+    }
+    body.mobile-mode #minimap-label { font-size: 6px; }
+
+    /* Health (ARMOR) bar moves under the score panel (left side)
+       instead of stacking below the mini-map — the right column is
+       crowded enough with the mini-map + fire button already. */
+    body.mobile-mode #health-panel {
+      top: auto; right: auto;
+      left: 6px; bottom: 6px;
+      min-width: 120px;
+      padding: 4px 10px;
+    }
+    body.mobile-mode #health-panel .label { font-size: 7px; margin-bottom: 2px; }
+
+    body.mobile-mode #speedometer {
+      bottom: 36px; right: 132px; left: auto; top: auto;
+    }
+
+    /* ── Main menu / map select readability (mobile only) ──────
+       The menu is shown as a scaled-down miniature of the desktop
+       layout (see #menu-scale-wrap). On very short phone viewports
+       (landscape phones can be as short as ~290px tall once browser
+       chrome is subtracted) the resulting scale factor is small
+       enough that the original 9-11px "fine print" text becomes
+       genuinely unreadable. Two things fix this: (1) shrinking the
+       reference canvas itself (see MENU_REF_W/H in the script) so
+       proportionally more of it maps to a bigger scale factor, and
+       (2) directly boosting the small text plus trimming wasted
+       padding/margins to compensate for the smaller canvas. None of
+       this touches the desktop layout — it's all inline styles
+       there, which these !important rules only apply on mobile. */
+    body.mobile-mode #main-menu {
+      padding: 16px 0 24px !important;
+    }
+    body.mobile-mode #mm-title-block { padding-top: 8px !important; }
+    body.mobile-mode #mm-title {
+      font-size: 84px !important;
+      letter-spacing: 12px !important;
+    }
+    body.mobile-mode #mm-version-label { font-size: 18px !important; }
+    body.mobile-mode .mm-icon-btn {
+      font-size: 30px !important;
+    }
+    body.mobile-mode #mm-coin-panel { padding: 10px 22px !important; }
+    body.mobile-mode #mm-coins-value { font-size: 40px !important; }
+
+    body.mobile-mode #mm-tank-select-block { margin-top: 50px !important; }
+    body.mobile-mode #mm-select-tank-label {
+      font-size: 24px !important;
+      margin-bottom: 10px !important;
+    }
+    body.mobile-mode .tank-card {
+      padding: 14px 18px !important;
+    }
+    body.mobile-mode .tank-card > div:nth-child(1) { margin-bottom: 8px !important; }
+    body.mobile-mode .tank-card > div:nth-child(2) { font-size: 30px !important; }
+    body.mobile-mode .tank-card > div:nth-child(3) {
+      font-size: 20px !important;
+      margin-top: 4px !important;
+    }
+    body.mobile-mode #mm-selected-label {
+      font-size: 22px !important;
+      margin-top: 10px !important;
+    }
+    body.mobile-mode #mm-play-btn {
+      font-size: 30px !important;
+      letter-spacing: 6px !important;
+      padding: 16px 56px !important;
+    }
+    /* The wrapper positioning #mm-play-btn (bottom:80/right:48 on
+       desktop) — targeted directly by its own id for compatibility
+       (avoids relying on :has() support). */
+    body.mobile-mode #mm-play-btn-wrap {
+      bottom: 24px !important;
+      right: 24px !important;
+    }
+
+    body.mobile-mode #ms-outer-box { padding: 20px 28px !important; }
+    body.mobile-mode #ms-eyebrow {
+      font-size: 20px !important;
+      margin-bottom: 6px !important;
+    }
+    body.mobile-mode #ms-title {
+      font-size: 34px !important;
+      margin-bottom: 16px !important;
+    }
+    body.mobile-mode #ms-cards-row {
+      gap: 14px !important;
+      margin-bottom: 14px !important;
+    }
+    body.mobile-mode .map-card { padding: 12px 14px !important; }
+    body.mobile-mode .map-card > div:nth-child(1) { margin-bottom: 8px !important; }
+    body.mobile-mode .map-card > div:nth-child(2) { font-size: 26px !important; }
+    body.mobile-mode .map-card > div:nth-child(3) {
+      font-size: 18px !important;
+      margin-top: 4px !important;
+    }
+    body.mobile-mode #ms-time-label {
+      font-size: 18px !important;
+      margin-bottom: 6px !important;
+    }
+    body.mobile-mode #ms-time-row {
+      gap: 10px !important;
+      margin-bottom: 10px !important;
+    }
+    body.mobile-mode .time-card { padding: 8px 14px !important; }
+    body.mobile-mode .time-card > div:nth-child(1) { margin-bottom: 3px !important; }
+    body.mobile-mode .time-card > div:nth-child(2) { font-size: 20px !important; }
+    body.mobile-mode #ms-back-btn {
+      font-size: 20px !important;
+      margin-top: 6px !important;
+    }
+
+    /* Left half: virtual joystick capture zone (invisible) */
+    #joystick-zone {
+      position: absolute;
+      left: 0; bottom: 0;
+      width: 50%; height: 60%;
+      pointer-events: auto;
+      touch-action: none;
+    }
+    /* Right half: camera-look drag zone (invisible, sits under fire btn) */
+    #look-zone {
+      position: absolute;
+      right: 0; bottom: 0;
+      width: 50%; height: 100%;
+      pointer-events: auto;
+      touch-action: none;
+      z-index: 1;
+    }
+    #joystick-base {
+      position: absolute;
+      width: 116px; height: 116px;
+      margin-left: -58px; margin-top: -58px;
+      border-radius: 50%;
+      border: 2px solid rgba(61,255,160,0.5);
+      background: rgba(0,0,0,0.28);
+      display: none;
+      pointer-events: none;
+    }
+    #joystick-knob {
+      position: absolute;
+      left: 50%; top: 50%;
+      width: 50px; height: 50px;
+      margin-left: -25px; margin-top: -25px;
+      border-radius: 50%;
+      background: rgba(61,255,160,0.35);
+      border: 1px solid rgba(61,255,160,0.9);
+      pointer-events: none;
+    }
+    #fire-btn {
+      position: absolute;
+      right: 30px; bottom: 32px;
+      width: 94px; height: 94px;
+      border-radius: 50%;
+      background: rgba(255,107,53,0.22);
+      border: 2px solid #ff6b35;
+      color: #ff6b35;
+      font-family: 'Rajdhani', sans-serif;
+      font-weight: 700;
+      font-size: 9px;
+      letter-spacing: 2px;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      justify-content: center;
+      gap: 2px;
+      text-align: center;
+      pointer-events: auto;
+      touch-action: none;
+      user-select: none;
+      -webkit-user-select: none;
+      -webkit-tap-highlight-color: transparent;
+      box-shadow: 0 0 16px rgba(255,107,53,0.25);
+      z-index: 2;
+      transition: background 0.08s, transform 0.08s;
+    }
+    #fire-btn svg { pointer-events: none; }
+    #fire-btn.active {
+      background: rgba(255,107,53,0.55);
+      transform: scale(0.93);
+    }
+
+    /* Exit-to-menu button (mobile only) — on desktop this is only
+       reachable via the pause screen, which requires releasing
+       pointer lock (Escape key), something touch has no equivalent
+       for. Tucked into the gap between the score panel and the
+       mini-map so it doesn't collide with either. */
+    #mobile-exit-btn {
+      position: absolute;
+      top: 6px; right: 98px;
+      padding: 5px 12px;
+      border: 1px solid rgba(255,80,80,0.6);
+      color: rgba(255,120,120,0.9);
+      background: rgba(0,0,0,0.5);
+      font-family: 'Share Tech Mono', monospace;
+      font-size: 9px; letter-spacing: 1px;
+      pointer-events: auto;
+      touch-action: manipulation;
+      user-select: none; -webkit-user-select: none; -webkit-tap-highlight-color: transparent;
+      z-index: 3;
+      transition: background 0.1s;
+    }
+    #mobile-exit-btn:active { background: rgba(255,80,80,0.35); }
+
+    /* Scope/zoom button (mobile only) — on desktop this is the
+       scroll wheel, which touch has no equivalent for. Sits just
+       above the fire button, out of the joystick's reach. */
+    #mobile-scope-btn {
+      position: absolute;
+      right: 30px; bottom: 132px;
+      width: 76px; height: 46px;
+      border-radius: 10px;
+      background: rgba(61,255,160,0.15);
+      border: 2px solid #3dffa0;
+      color: #3dffa0;
+      font-family: 'Rajdhani', sans-serif;
+      font-weight: 700; font-size: 8px; letter-spacing: 1px;
+      display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 2px;
+      pointer-events: auto;
+      touch-action: manipulation;
+      user-select: none; -webkit-user-select: none; -webkit-tap-highlight-color: transparent;
+      z-index: 3;
+      transition: background 0.1s, transform 0.1s;
+    }
+    #mobile-scope-btn svg { pointer-events: none; }
+    #mobile-scope-btn.active {
+      background: rgba(61,255,160,0.5);
+      transform: scale(0.95);
+    }
+
+    /* Rotate-to-landscape prompt (phones held in portrait) */
+    #rotate-prompt {
+      position: fixed;
+      inset: 0;
+      z-index: 99998;
+      display: none;
+      background: #0a0c0f;
+      color: #3dffa0;
+      flex-direction: column;
+      align-items: center;
+      justify-content: center;
+      text-align: center;
+      font-family: 'Share Tech Mono', monospace;
+      letter-spacing: 2px;
+      padding: 24px;
+    }
+    body.mobile-mode.portrait-warning #rotate-prompt { display: flex; }
+    #rotate-prompt .icon { font-size: 42px; margin-bottom: 18px; }
+    #rotate-prompt .title {
+      font-family: 'Rajdhani', sans-serif;
+      font-size: 20px; font-weight: 700;
+      letter-spacing: 4px; color: #fff; margin-bottom: 8px;
+    }
+    #rotate-prompt .sub { font-size: 11px; color: rgba(255,255,255,0.5); }
+
+    /* Menu scale wrapper (main menu + map select). Desktop: no-op,
+       fills the viewport exactly like before. Mobile: JS locks this
+       to a fixed 1600×900 "PC" reference canvas and scales it down
+       uniformly (see updateMenuScale in the script) so the exact
+       same layout renders shrunk-to-fit instead of overflowing. */
+    #menu-scale-wrap {
+      position: absolute; inset: 0;
+      /* MUST be an explicit z-index higher than #menu-backdrop's.
+         Without one (z-index:auto), CSS stacking rules paint any
+         explicitly-z-indexed sibling (like the backdrop) on top of
+         this ENTIRE subtree regardless of DOM order or the z-index
+         set on main-menu/map-select inside it — which is exactly
+         what was hiding the whole menu behind the black backdrop. */
+      z-index: 18;
+    }
+    body.mobile-mode #menu-scale-wrap {
+      inset: auto;
+      top: 50%; left: 50%;
+      width: 1600px; height: 560px;
+      transform-origin: center center;
+    }
+    #menu-backdrop {
+      position: fixed;
+      inset: 0;
+      background: #0a0a0a;
+      z-index: 17; /* above canvas/HUD/touch-controls (16), below #menu-scale-wrap (18) */
+      display: none;
+      pointer-events: none;
+    }
+
     /* Game over / Win overlay */
     #overlay {
       position: absolute;
@@ -195,6 +578,12 @@
       justify-content: center;
       background: rgba(0,0,0,0.75);
       display: none;
+      /* MUST be explicit and higher than #mobile-controls (16) —
+         without it (z-index:auto) the always-present joystick/fire/
+         scope touch zones painted (and captured taps) on top of this
+         entire screen, which is why RESTART MISSION did nothing on
+         mobile: the tap never reached the button underneath. */
+      z-index: 19;
     }
     #overlay h1 {
       font-family: 'Rajdhani', sans-serif;
@@ -256,6 +645,27 @@
 </head>
 <body>
 
+<!-- TEMPORARY diagnostic panel — shows JS errors / load failures /
+     checkpoints directly on screen since there's no console on a
+     phone. Sits above everything (max z-index), doesn't block
+     touches. Remove once the black-screen issue is confirmed fixed. -->
+<div id="debug-panel" style="
+  position:fixed; top:0; left:0; right:0; max-height:46vh;
+  overflow:hidden; z-index:2147483647; pointer-events:none;
+  background:rgba(0,0,0,0.82); color:#3dffa0;
+  font:10px/1.4 'Share Tech Mono', monospace;
+  white-space:pre-wrap; padding:4px 6px; word-break:break-all;
+  display:none;
+"></div>
+<script>
+  // Only show the diagnostic panel when explicitly requested (?debug=1),
+  // now that the black-screen cause has been found & fixed — keeps
+  // normal play clean while still available if needed for follow-up.
+  if (location.search.indexOf('debug') !== -1) {
+    document.getElementById('debug-panel').style.display = 'block';
+  }
+</script>
+
 <!-- Splash screen: shows the studio logo for 2s, then fades out -->
 <div id="splash-screen" style="
   position:fixed; inset:0; z-index:99999; background:#000;
@@ -267,11 +677,13 @@
 <script>
   (function() {
     var splash = document.getElementById('splash-screen');
+    window.__dbgLog && window.__dbgLog('splash shown');
     setTimeout(function() {
       splash.style.opacity = '0';
       splash.style.pointerEvents = 'none';
       setTimeout(function() {
         splash.style.display = 'none';
+        window.__dbgLog && window.__dbgLog('splash hidden');
       }, 900); // matches the CSS transition duration above
     }, 2000);
   })();
@@ -329,6 +741,40 @@
 
   <div id="hit-flash"></div>
 
+  <!-- Mobile touch controls (phone only) -->
+  <div id="mobile-controls">
+    <div id="joystick-zone">
+      <div id="joystick-base">
+        <div id="joystick-knob"></div>
+      </div>
+    </div>
+    <div id="look-zone"></div>
+    <div id="fire-btn">
+      <svg viewBox="0 0 24 40" width="34" height="34">
+        <path d="M12 2 C16 6 18 9 18 12 L18 30 L6 30 L6 12 C6 9 8 6 12 2 Z" fill="currentColor"/>
+        <rect x="5" y="30" width="14" height="5" rx="1" fill="currentColor"/>
+      </svg>
+      <span>FIRE</span>
+    </div>
+    <div id="mobile-scope-btn">
+      <svg viewBox="0 0 32 20" width="26" height="16">
+        <circle cx="9" cy="12" r="7" fill="none" stroke="currentColor" stroke-width="2.5"/>
+        <circle cx="23" cy="12" r="7" fill="none" stroke="currentColor" stroke-width="2.5"/>
+        <rect x="13" y="8" width="6" height="4" fill="currentColor"/>
+        <rect x="6" y="2" width="3" height="5" rx="1" fill="currentColor"/>
+        <rect x="22" y="2" width="3" height="5" rx="1" fill="currentColor"/>
+      </svg>
+      <span>SCOPE</span>
+    </div>
+    <div id="mobile-exit-btn">[ EXIT ]</div>
+  </div>
+
+  <div id="rotate-prompt">
+    <div class="icon">&#8635;</div>
+    <div class="title">ROTATE YOUR DEVICE</div>
+    <div class="sub">TANK WAR IS PLAYED IN LANDSCAPE MODE</div>
+  </div>
+
   <!-- Free-look indicator -->
   <div id="freelook-ind" style="
     position:absolute; top:50%; left:50%;
@@ -343,6 +789,19 @@
 
   <!-- Pause / tank-select screen — shown when pointer lock is released -->
   <!-- ── MAIN MENU ─────────────────────────────────────── -->
+  <!-- Backdrop: on mobile the scaled 1600×900 menu canvas doesn't
+       always fill the (differently-proportioned) phone viewport
+       edge-to-edge, so this covers the full screen behind it —
+       otherwise the 3D game underneath shows through the gaps.
+       JS shows/hides it in lockstep with the menu screens. -->
+  <div id="menu-backdrop"></div>
+  <!-- Menu scale wrapper: on desktop this is a no-op (both screens
+       already fill the viewport via inset:0). On mobile, JS gives
+       this a fixed 1600×900 "PC" reference size and scales the
+       whole thing down uniformly to fit the phone, so the menu is
+       pixel-for-pixel the same layout as on a PC — just smaller —
+       instead of a separately-broken mobile layout. -->
+  <div id="menu-scale-wrap">
   <div id="main-menu" style="
     position:absolute; inset:0; display:flex; flex-direction:column;
     align-items:center; justify-content:flex-start;
@@ -350,7 +809,7 @@
     padding:40px 0 48px;">
 
     <!-- Version label (main menu only) -->
-    <div style="position:absolute; bottom:18px; right:22px; z-index:2;
+    <div id="mm-version-label" style="position:absolute; bottom:18px; right:22px; z-index:2;
       font-family:'Share Tech Mono',monospace; font-size:13px;
       color:rgba(255,255,255,0.35); letter-spacing:1px; pointer-events:none;">
       TankWar v0.31.0
@@ -358,14 +817,14 @@
 
     <!-- Top-left: settings + profile -->
     <div style="position:absolute; top:24px; left:28px; display:flex; gap:14px; z-index:2;">
-      <div onclick="openSettings()" style="
+      <div class="mm-icon-btn" onclick="openSettings()" style="
         display:inline-flex; align-items:center; justify-content:center;
         cursor:pointer; pointer-events:all; width:56px; height:56px;
         border:1px solid rgba(255,255,255,0.25); color:rgba(255,255,255,0.6);
         font-size:26px; transition:border-color .2s, color .2s; background:rgba(0,0,0,0.4);"
         onmouseover="this.style.borderColor='#3dffa0';this.style.color='#3dffa0'"
         onmouseout="this.style.borderColor='rgba(255,255,255,0.25)';this.style.color='rgba(255,255,255,0.6)'">⚙</div>
-      <div onclick="openProfile()" style="
+      <div class="mm-icon-btn" onclick="openProfile()" style="
         display:inline-flex; align-items:center; justify-content:center;
         cursor:pointer; pointer-events:all; width:56px; height:56px;
         border:1px solid rgba(255,255,255,0.25); color:rgba(255,255,255,0.6);
@@ -376,21 +835,21 @@
 
     <!-- Left side: shop / skins / friends (icon buttons, open fullscreen panels) -->
     <div style="position:absolute; top:140px; left:28px; display:flex; flex-direction:column; gap:14px; z-index:2;">
-      <div onclick="openFullscreenPanel('mm-shop-modal')" title="Shop" style="
+      <div class="mm-icon-btn" onclick="openFullscreenPanel('mm-shop-modal')" title="Shop" style="
         display:inline-flex; align-items:center; justify-content:center;
         cursor:pointer; pointer-events:all; width:56px; height:56px;
         border:1px solid rgba(255,255,255,0.25); color:rgba(255,255,255,0.6);
         font-size:24px; transition:border-color .2s, color .2s; background:rgba(0,0,0,0.4);"
         onmouseover="this.style.borderColor='#3dffa0';this.style.color='#3dffa0'"
         onmouseout="this.style.borderColor='rgba(255,255,255,0.25)';this.style.color='rgba(255,255,255,0.6)'">🛒</div>
-      <div onclick="openFullscreenPanel('mm-skins-modal')" title="Skins" style="
+      <div class="mm-icon-btn" onclick="openFullscreenPanel('mm-skins-modal')" title="Skins" style="
         display:inline-flex; align-items:center; justify-content:center;
         cursor:pointer; pointer-events:all; width:56px; height:56px;
         border:1px solid rgba(255,255,255,0.25); color:rgba(255,255,255,0.6);
         font-size:24px; transition:border-color .2s, color .2s; background:rgba(0,0,0,0.4);"
         onmouseover="this.style.borderColor='#3dffa0';this.style.color='#3dffa0'"
         onmouseout="this.style.borderColor='rgba(255,255,255,0.25)';this.style.color='rgba(255,255,255,0.6)'">🎨</div>
-      <div onclick="openFullscreenPanel('mm-friends-modal')" title="Friends" style="
+      <div class="mm-icon-btn" onclick="openFullscreenPanel('mm-friends-modal')" title="Friends" style="
         display:inline-flex; align-items:center; justify-content:center;
         cursor:pointer; pointer-events:all; width:56px; height:56px;
         border:1px solid rgba(255,255,255,0.25); color:rgba(255,255,255,0.6);
@@ -400,7 +859,7 @@
     </div>
 
     <!-- Top-right: coin counter -->
-    <div style="position:absolute; top:24px; right:28px; z-index:2; display:flex; align-items:center; gap:16px;
+    <div id="mm-coin-panel" style="position:absolute; top:24px; right:28px; z-index:2; display:flex; align-items:center; gap:16px;
       border:1px solid rgba(255,255,255,0.25); background:rgba(0,0,0,0.4);
       padding:18px 36px; pointer-events:none;">
       <svg width="34" height="34" viewBox="0 0 24 24" style="flex:none;">
@@ -414,19 +873,19 @@
     </div>
 
     <!-- Title -->
-    <div style="text-align:center; padding-top:20px;">
-      <div style="font-family:'Rajdhani',sans-serif; font-size:110px; font-weight:900;
+    <div id="mm-title-block" style="text-align:center; padding-top:20px;">
+      <div id="mm-title" style="font-family:'Rajdhani',sans-serif; font-size:110px; font-weight:900;
                   color:#fff; letter-spacing:18px; line-height:1;">
         TANK<span style="color:#3dffa0;">WAR</span>
       </div>
     </div>
 
     <!-- Tank cards -->
-    <div style="text-align:center; margin-top:140px;">
-      <div style="font-size:11px; letter-spacing:4px; color:rgba(255,255,255,0.35);
+    <div id="mm-tank-select-block" style="text-align:center; margin-top:140px;">
+      <div id="mm-select-tank-label" style="font-size:11px; letter-spacing:4px; color:rgba(255,255,255,0.35);
                   margin-bottom:20px;">SELECT YOUR TANK</div>
 
-      <div style="display:flex; gap:20px; justify-content:center;">
+      <div id="mm-tank-cards-row" style="display:flex; gap:20px; justify-content:center;">
 
         <!-- SCOUT -->
         <div class="tank-card" id="mm-card-scout" onclick="mmSelectTank('scout')" style="
@@ -503,7 +962,7 @@
     </div>
 
     <!-- PLAY button (bottom-right corner, clear of the version label) -->
-    <div style="position:absolute; bottom:80px; right:48px; z-index:2;">
+    <div id="mm-play-btn-wrap" style="position:absolute; bottom:80px; right:48px; z-index:2;">
       <div id="mm-play-btn" onclick="startGameFromMenu()" style="
         display:inline-block; cursor:pointer; pointer-events:all;
         background:#3dffa0; color:#000;
@@ -649,18 +1108,18 @@
     align-items:center; justify-content:center;
     background:#0a0a0a; pointer-events:all; z-index:25;">
 
-    <div style="text-align:center; padding:48px 64px;
+    <div id="ms-outer-box" style="text-align:center; padding:48px 64px;
                 border:1px solid rgba(255,255,255,0.1);">
 
-      <div style="font-size:10px; letter-spacing:5px; color:rgba(255,255,255,0.35);
+      <div id="ms-eyebrow" style="font-size:10px; letter-spacing:5px; color:rgba(255,255,255,0.35);
                   margin-bottom:8px;">TANKWAR</div>
-      <div style="font-family:'Rajdhani',sans-serif; font-size:36px; font-weight:700;
+      <div id="ms-title" style="font-family:'Rajdhani',sans-serif; font-size:36px; font-weight:700;
                   color:#fff; letter-spacing:6px; margin-bottom:36px;">SELECT MAP</div>
 
-      <div style="display:flex; gap:24px; justify-content:center; margin-bottom:32px;">
+      <div id="ms-cards-row" style="display:flex; gap:24px; justify-content:center; margin-bottom:32px;">
 
         <!-- Village -->
-        <div id="ms-card-village" onclick="selectMap('village')" style="
+        <div class="map-card" id="ms-card-village" onclick="selectMap('village')" style="
           border:2px solid #3dffa0; background:rgba(61,255,160,0.07);
           padding:24px 28px; cursor:pointer; min-width:160px;
           transition:border-color .15s, background .15s;">
@@ -684,7 +1143,7 @@
         </div>
 
         <!-- Farm -->
-        <div id="ms-card-farm" onclick="selectMap('farm')" style="
+        <div class="map-card" id="ms-card-farm" onclick="selectMap('farm')" style="
           border:2px solid rgba(255,255,255,0.2); background:transparent;
           padding:24px 28px; cursor:pointer; min-width:160px;
           transition:border-color .15s, background .15s;"
@@ -708,7 +1167,7 @@
         </div>
 
         <!-- City -->
-        <div id="ms-card-city" onclick="selectMap('city')" style="
+        <div class="map-card" id="ms-card-city" onclick="selectMap('city')" style="
           border:2px solid rgba(255,255,255,0.2); background:transparent;
           padding:24px 28px; cursor:pointer; min-width:160px;
           transition:border-color .15s, background .15s;"
@@ -747,7 +1206,7 @@
         </div>
 
         <!-- Arena -->
-        <div id="ms-card-arena" onclick="selectMap('arena')" style="
+        <div class="map-card" id="ms-card-arena" onclick="selectMap('arena')" style="
           border:2px solid rgba(255,255,255,0.2); background:transparent;
           padding:24px 28px; cursor:pointer; min-width:160px;
           transition:border-color .15s, background .15s;"
@@ -776,10 +1235,10 @@
       </div>
 
       <!-- Back button -->
-      <div style="font-size:9px; letter-spacing:3px; color:rgba(255,255,255,0.3);
+      <div id="ms-time-label" style="font-size:9px; letter-spacing:3px; color:rgba(255,255,255,0.3);
         margin-bottom:12px;">TIME OF DAY</div>
-      <div style="display:flex; gap:16px; justify-content:center; margin-bottom:28px;">
-        <div id="ms-card-day" onclick="selectTimeOfDay('day')" style="
+      <div id="ms-time-row" style="display:flex; gap:16px; justify-content:center; margin-bottom:28px;">
+        <div class="time-card" id="ms-card-day" onclick="selectTimeOfDay('day')" style="
           border:2px solid #ffdd44; background:rgba(255,221,68,0.08);
           padding:12px 24px; cursor:pointer; min-width:110px; text-align:center;
           transition:border-color .15s, background .15s;">
@@ -787,7 +1246,7 @@
           <div style="font-family:'Rajdhani',sans-serif; font-size:14px; font-weight:700;
             color:#ffdd44; letter-spacing:2px;">DAY</div>
         </div>
-        <div id="ms-card-night" onclick="selectTimeOfDay('night')" style="
+        <div class="time-card" id="ms-card-night" onclick="selectTimeOfDay('night')" style="
           border:2px solid rgba(255,255,255,0.2); background:transparent;
           padding:12px 24px; cursor:pointer; min-width:110px; text-align:center;
           transition:border-color .15s, background .15s;">
@@ -797,7 +1256,7 @@
         </div>
       </div>
       <!-- Back button -->
-      <div onclick="backToMainMenu()" style="
+      <div id="ms-back-btn" onclick="backToMainMenu()" style="
         font-family:'Share Tech Mono',monospace; font-size:11px; letter-spacing:3px;
         color:rgba(255,255,255,0.3); cursor:pointer; margin-top:8px;
         transition:color .2s;"
@@ -807,6 +1266,7 @@
       </div>
 
     </div>
+  </div>
   </div>
 
   <div id="lock-hint" style="
@@ -854,12 +1314,133 @@
 
 <!-- Three.js from CDN -->
 <script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
+<script>
+  window.__dbgLog && window.__dbgLog('THREE loaded: ' + (typeof THREE !== 'undefined' ? ('yes, r' + THREE.REVISION) : 'NO — THREE is undefined!'));
+</script>
 
 <script>
 // ═══════════════════════════════════════════════════════
 //  IRON TANK — Single-file 3D Tank Game
 //  Engine: Three.js r128
 // ═══════════════════════════════════════════════════════
+
+// ═══════════════════════════════════════════════════════
+//  MOBILE CONTROLS — feature-detected once at load. Desktop
+//  behaviour (keyboard + mouse + pointer lock) is untouched;
+//  everything gated behind IS_MOBILE_CONTROLS is additive.
+// ═══════════════════════════════════════════════════════
+function detectMobileControls() {
+  const hasTouch  = ('ontouchstart' in window) || navigator.maxTouchPoints > 0;
+  const coarse    = window.matchMedia && window.matchMedia('(pointer: coarse)').matches;
+  const smallDim  = Math.min(window.innerWidth, window.innerHeight) <= 900;
+  return hasTouch && coarse && smallDim;
+}
+const IS_MOBILE_CONTROLS = detectMobileControls();
+if (IS_MOBILE_CONTROLS) document.body.classList.add('mobile-mode');
+window.__dbgLog && window.__dbgLog('IS_MOBILE_CONTROLS=' + IS_MOBILE_CONTROLS +
+  ' touch=' + (('ontouchstart' in window) || navigator.maxTouchPoints > 0) +
+  ' coarse=' + (window.matchMedia && window.matchMedia('(pointer: coarse)').matches) +
+  ' dims=' + window.innerWidth + 'x' + window.innerHeight);
+
+function updateOrientationWarning() {
+  if (!IS_MOBILE_CONTROLS) return;
+  try {
+    const portrait = window.innerHeight > window.innerWidth;
+    document.body.classList.toggle('portrait-warning', portrait);
+  } catch (err) { /* never let a viewport read crash the app */ }
+}
+
+// Scales the main-menu / map-select screens (a fixed 1600×900 "PC"
+// reference canvas on mobile — see CSS) down to fit the phone's
+// actual viewport, so they render as an exact miniature of the
+// desktop layout instead of a separately-broken narrow layout.
+const MENU_REF_W = 1600, MENU_REF_H = 560;
+function updateMenuScale() {
+  if (!IS_MOBILE_CONTROLS) return;
+  try {
+    const wrap = document.getElementById('menu-scale-wrap');
+    if (!wrap) return;
+    const scale = Math.min(window.innerWidth / MENU_REF_W, window.innerHeight / MENU_REF_H);
+    if (!isFinite(scale) || scale <= 0) return; // guard against a bad transform hiding the menu
+    wrap.style.transform = `translate(-50%, -50%) scale(${scale})`;
+    if (window.__dbgStatus) {
+      const mm = document.getElementById('main-menu');
+      const ms = document.getElementById('map-select');
+      const bd = document.getElementById('menu-backdrop');
+      window.__dbgStatus(
+        'dims=' + window.innerWidth + 'x' + window.innerHeight +
+        ' scale=' + scale.toFixed(3) +
+        ' portrait=' + document.body.classList.contains('portrait-warning') +
+        ' mainMenu.display=' + (mm && mm.style.display) +
+        ' mapSelect.display=' + (ms && ms.style.display) +
+        ' backdrop.display=' + (bd && bd.style.display)
+      );
+    }
+  } catch (err) {
+    window.__dbgLog && window.__dbgLog('updateMenuScale ERROR: ' + err.message);
+  }
+}
+
+function refreshMobileLayout() {
+  updateOrientationWarning();
+  updateMenuScale();
+}
+// Some Android browsers report stale window.innerWidth/innerHeight for a
+// moment right when 'resize'/'orientationchange' fire, which previously
+// could leave the menu scaled/positioned wrong (invisible behind the
+// backdrop) after rotating. Re-check immediately AND a couple more times
+// shortly after, plus keep a cheap periodic fallback running so the
+// layout can never get permanently stuck.
+window.addEventListener('resize', refreshMobileLayout);
+window.addEventListener('orientationchange', refreshMobileLayout);
+if (window.matchMedia) {
+  const orientationQuery = window.matchMedia('(orientation: landscape)');
+  if (orientationQuery.addEventListener) orientationQuery.addEventListener('change', refreshMobileLayout);
+  else if (orientationQuery.addListener) orientationQuery.addListener(refreshMobileLayout);
+}
+window.addEventListener('orientationchange', () => {
+  setTimeout(refreshMobileLayout, 150);
+  setTimeout(refreshMobileLayout, 400);
+  setTimeout(refreshMobileLayout, 800);
+});
+if (IS_MOBILE_CONTROLS) setInterval(refreshMobileLayout, 500);
+refreshMobileLayout();
+
+// Keeps the full-screen black backdrop, AND the joystick/fire/scope/exit
+// touch controls, in sync with whichever screen is currently shown.
+// Two things this fixes:
+//  1. Letterboxed gaps around the scaled-down menu never reveal the
+//     game underneath (the backdrop).
+//  2. The touch-control zones (which cover most of the screen and
+//     sit above normal HUD content) no longer swallow taps meant for
+//     buttons on the main menu / map select / win-lose overlay — this
+//     is what was silently eating taps on RESTART MISSION.
+if (IS_MOBILE_CONTROLS) {
+  const menuBackdrop   = document.getElementById('menu-backdrop');
+  const mainMenuEl      = document.getElementById('main-menu');
+  const mapSelectEl     = document.getElementById('map-select');
+  const overlayEl        = document.getElementById('overlay');
+  const mobileControlsEl = document.getElementById('mobile-controls');
+  let lastBackdropVisible = null;
+  function syncMenuBackdrop() {
+    const menuVisible = mainMenuEl.style.display !== 'none' || mapSelectEl.style.display !== 'none';
+    const overlayVisible = overlayEl.style.display !== 'none' && overlayEl.style.display !== '';
+    menuBackdrop.style.display = menuVisible ? 'block' : 'none';
+    if (mobileControlsEl) {
+      mobileControlsEl.style.display = (menuVisible || overlayVisible) ? 'none' : 'block';
+    }
+    if (menuVisible !== lastBackdropVisible) {
+      lastBackdropVisible = menuVisible;
+      window.__dbgLog && window.__dbgLog('menu-backdrop -> ' + (menuVisible ? 'shown' : 'hidden') +
+        ' (mainMenu=' + mainMenuEl.style.display + ', mapSelect=' + mapSelectEl.style.display +
+        ', overlay=' + overlayEl.style.display + ')');
+    }
+  }
+  new MutationObserver(syncMenuBackdrop).observe(mainMenuEl,  { attributes: true, attributeFilter: ['style'] });
+  new MutationObserver(syncMenuBackdrop).observe(mapSelectEl, { attributes: true, attributeFilter: ['style'] });
+  new MutationObserver(syncMenuBackdrop).observe(overlayEl,   { attributes: true, attributeFilter: ['style'] });
+  syncMenuBackdrop();
+}
 
 // ═══════════════════════════════════════════════════════
 //  WEB AUDIO ENGINE
@@ -1274,9 +1855,9 @@ const benchList     = []; // destructible benches
 const lampList      = []; // destructible lamp posts  { group, cx, cz, envRef, fallen, gone, light }
 const trafficPoles  = []; // destructible traffic lights { group, cx, cz, envRef, fallen, gone }
 
-const HOUSE_COLORS = [0x8b6347, 0xc8a97a, 0x7a8c7a, 0xb5956a, 0x9aaa90, 0xcfb98c];
-const ROOF_COLORS  = [0x7a3a2a, 0xaa5533, 0x4a5a4a, 0x884433, 0x3a4a3a, 0x995522];
-const CAR_COLORS   = [0xdd3333, 0x3399dd, 0xddcc33, 0x33cc77, 0xff7722, 0xcc33cc];
+const HOUSE_COLORS = [0x8b6347, 0xc8a97a, 0x7a8c7a, 0xb5956a, 0x9aaa90, 0xcfb98c, 0xFFFFFF];
+const ROOF_COLORS  = [0xFFFFFF, 0x7a3a2a, 0xaa5533, 0x4a5a4a, 0x884433, 0x3a4a3a, 0x995522];
+const CAR_COLORS   = [0xdd3333, 0x3399dd, 0xddcc33, 0x33cc77, 0xff7722, 0xcc33cc, 0xFFFFFF];
 
 // Builds a 4-sided pyramid roof BufferGeometry that exactly matches a
 // rectangular footprint (w × d), with optional eaves overhang.
@@ -2105,7 +2686,7 @@ const ENEMY_CLASSES = {
   },
   scout: {
     color: 0xbbaa00, darkColor: 0x887700, accentColor: 0xffee44,
-    hp: 1, dmg: 6, speed: 7.0, turn: 2.2,
+    hp: 2, dmg: 6, speed: 7.0, turn: 2.2,
     fireMin: 0.8, fireMax: 1.44,
     prefDist: 18, radius: 1.4,
     hullScale: 0.78,
@@ -3793,10 +4374,13 @@ function updateEnemyProjectiles(dt) {
       p.vel.y -= GRAVITY * dt;
       p.mesh.position.addScaledVector(p.vel, dt);
 
-      // Mid-air collision with a building/obstacle (barn, houses, etc.)
-      // — without this, shells just sailed straight through walls/roofs.
+      // Mid-air collision with a building/obstacle — this exists only
+      // to stop shells flying straight through the farm map's barn
+      // (whose roof reaches ~14.5 units). Restricted to the farm map
+      // so it doesn't make shells explode high above ordinary houses
+      // on other maps, which are much shorter.
       let hitWall = false;
-      if (p.mesh.position.y <= 16.0) {
+      if (currentMap === 'farm' && p.mesh.position.y <= 16.0) {
         for (const obj of envObjects) {
           if (Math.abs(p.mesh.position.x - obj.cx) <= obj.hw &&
               Math.abs(p.mesh.position.z - obj.cz) <= obj.hd) { hitWall = true; break; }
@@ -4198,7 +4782,9 @@ function resumeGame() {
   const hpPct = playerHP / playerMaxHP;
   healthBar.style.width = (hpPct * 100) + '%';
   // Re-request pointer lock — this hides the menu and unpauses via pointerlockchange
-  canvas.requestPointerLock();
+  // (skipped on mobile: there's no mouse to lock, touch controls run unlocked)
+  if (!IS_MOBILE_CONTROLS) canvas.requestPointerLock();
+  else { gamePaused = false; document.getElementById('lock-hint').style.display = 'none'; }
 }
 window.resumeGame = resumeGame;
 
@@ -4297,6 +4883,7 @@ const CAM_PITCH_MIN = -0.3;
 const CAM_PITCH_MAX =  0.6;
 
 canvas.addEventListener('click', () => {
+  if (IS_MOBILE_CONTROLS) return; // touch controls don't use pointer lock
   if (!document.pointerLockElement) canvas.requestPointerLock();
 });
 
@@ -4369,6 +4956,172 @@ document.addEventListener('mouseup', e => {
     if (ind) ind.style.opacity = '0';
   }
 });
+
+// ═══════════════════════════════════════════════════════
+//  MOBILE TOUCH CONTROLS
+//  Left side  : virtual joystick — up/down drives forward/back
+//               (KeyW/KeyS), left/right turns the chassis
+//               (KeyA/KeyD) — reuses the exact same `keys`
+//               flags the keyboard sets, so updatePlayer() and
+//               the engine-hum / track-mark logic need no changes.
+//  Right side : drag anywhere to swing the camera/turret left
+//               and right (and up/down), same math as the
+//               desktop mousemove handler.
+//  Fire button: bottom-right, one tap = one shot (matches LMB).
+// ═══════════════════════════════════════════════════════
+if (IS_MOBILE_CONTROLS) {
+  const joystickZone = document.getElementById('joystick-zone');
+  const joystickBase = document.getElementById('joystick-base');
+  const joystickKnob = document.getElementById('joystick-knob');
+  const lookZone      = document.getElementById('look-zone');
+  const fireBtn        = document.getElementById('fire-btn');
+
+  const JOY_RADIUS   = 55;   // px the knob can travel from centre
+  const JOY_DEADZONE = 0.32; // fraction of radius before a direction "engages"
+  const TOUCH_LOOK_SENS = 0.0042;
+
+  let joyTouchId = null, joyBaseX = 0, joyBaseY = 0;
+  let lookTouchId = null, lastLookX = 0, lastLookY = 0;
+  let fireTouchId = null;
+
+  function resetJoystickKeys() {
+    keys['KeyW'] = false; keys['KeyS'] = false;
+    keys['KeyA'] = false; keys['KeyD'] = false;
+  }
+
+  function hideJoystick() {
+    joystickBase.style.display = 'none';
+    joystickKnob.style.transform = 'translate(0px, 0px)';
+    resetJoystickKeys();
+  }
+
+  joystickZone.addEventListener('touchstart', e => {
+    if (joyTouchId !== null) return;
+    const t = e.changedTouches[0];
+    joyTouchId = t.identifier;
+    joyBaseX = t.clientX;
+    joyBaseY = t.clientY;
+    // joystick-base is positioned relative to joystick-zone's own box,
+    // not the viewport, so convert the touch point into zone-local
+    // coordinates — otherwise the joystick spawns offset from the finger.
+    const zoneRect = joystickZone.getBoundingClientRect();
+    joystickBase.style.left = (joyBaseX - zoneRect.left) + 'px';
+    joystickBase.style.top  = (joyBaseY - zoneRect.top) + 'px';
+    joystickBase.style.display = 'block';
+    if (!audioCtx) initAudio();
+    e.preventDefault();
+  }, { passive: false });
+
+  joystickZone.addEventListener('touchmove', e => {
+    for (const t of e.changedTouches) {
+      if (t.identifier !== joyTouchId) continue;
+      let dx = t.clientX - joyBaseX;
+      let dy = t.clientY - joyBaseY;
+      const dist = Math.hypot(dx, dy);
+      if (dist > JOY_RADIUS) { dx = dx / dist * JOY_RADIUS; dy = dy / dist * JOY_RADIUS; }
+      joystickKnob.style.transform = `translate(${dx}px, ${dy}px)`;
+
+      const nx = dx / JOY_RADIUS, ny = dy / JOY_RADIUS;
+      keys['KeyW'] = ny < -JOY_DEADZONE;
+      keys['KeyS'] = ny >  JOY_DEADZONE;
+      keys['KeyA'] = nx < -JOY_DEADZONE;
+      keys['KeyD'] = nx >  JOY_DEADZONE;
+    }
+    e.preventDefault();
+  }, { passive: false });
+
+  function endJoystickTouch(e) {
+    for (const t of e.changedTouches) {
+      if (t.identifier === joyTouchId) { joyTouchId = null; hideJoystick(); }
+    }
+  }
+  joystickZone.addEventListener('touchend', endJoystickTouch);
+  joystickZone.addEventListener('touchcancel', endJoystickTouch);
+
+  // ── Look zone: drag finger left/right/up/down to swing the
+  //    camera and turret, exactly like mousemove does for the mouse.
+  lookZone.addEventListener('touchstart', e => {
+    if (lookTouchId !== null) return;
+    const t = e.changedTouches[0];
+    lookTouchId = t.identifier;
+    lastLookX = t.clientX;
+    lastLookY = t.clientY;
+    if (!audioCtx) initAudio();
+    e.preventDefault();
+  }, { passive: false });
+
+  lookZone.addEventListener('touchmove', e => {
+    for (const t of e.changedTouches) {
+      if (t.identifier !== lookTouchId) continue;
+      const dx = t.clientX - lastLookX;
+      const dy = t.clientY - lastLookY;
+      lastLookX = t.clientX;
+      lastLookY = t.clientY;
+      if (gameRunning && !gamePaused) {
+        turretYaw   -= dx * TOUCH_LOOK_SENS;
+        turretPitch += dy * TOUCH_LOOK_SENS;
+        turretPitch  = Math.max(PITCH_MIN, Math.min(PITCH_MAX, turretPitch));
+        camYaw   = turretYaw;
+        camPitch = turretPitch;
+      }
+    }
+    e.preventDefault();
+  }, { passive: false });
+
+  function endLookTouch(e) {
+    for (const t of e.changedTouches) {
+      if (t.identifier === lookTouchId) lookTouchId = null;
+    }
+  }
+  lookZone.addEventListener('touchend', endLookTouch);
+  lookZone.addEventListener('touchcancel', endLookTouch);
+
+  // ── Fire button ──────────────────────────────────────────
+  fireBtn.addEventListener('touchstart', e => {
+    if (fireTouchId !== null) return;
+    const t = e.changedTouches[0];
+    fireTouchId = t.identifier;
+    fireBtn.classList.add('active');
+    if (!audioCtx) initAudio();
+    if (gameRunning && !gamePaused) fireProjectile();
+    e.preventDefault();
+  }, { passive: false });
+
+  function endFireTouch(e) {
+    for (const t of e.changedTouches) {
+      if (t.identifier === fireTouchId) { fireTouchId = null; fireBtn.classList.remove('active'); }
+    }
+  }
+  fireBtn.addEventListener('touchend', endFireTouch);
+  fireBtn.addEventListener('touchcancel', endFireTouch);
+
+  // ── Scope/zoom button — desktop toggles this with the scroll
+  //    wheel, which touch has no equivalent for. Tap to zoom in,
+  //    tap again to zoom back out (same persistent-toggle model
+  //    as the wheel, not a hold-to-aim).
+  const scopeBtn = document.getElementById('mobile-scope-btn');
+  scopeBtn.addEventListener('touchstart', e => {
+    if (!audioCtx) initAudio();
+    if (gameRunning && !gamePaused) {
+      setSniperMode(!sniperMode);
+      scopeBtn.classList.toggle('active', sniperMode);
+    }
+    e.preventDefault();
+  }, { passive: false });
+
+  // ── Exit-to-menu button — on desktop this only lives on the
+  //    pause screen, reached by releasing pointer lock (Escape),
+  //    which doesn't exist on touch. Give mobile a direct way out.
+  const exitBtn = document.getElementById('mobile-exit-btn');
+  exitBtn.addEventListener('touchstart', e => {
+    if (gameRunning) {
+      setSniperMode(false);
+      if (scopeBtn) scopeBtn.classList.remove('active');
+      exitToMainMenu();
+    }
+    e.preventDefault();
+  }, { passive: false });
+}
 
 // ── Game state ────────────────────────────────────────────
 let destroyed   = 0;
@@ -4448,8 +5201,21 @@ function selectMap(mapName) {
     applyPlayerTankClass();
     buildCurrentMap();
     restartGame();
-    const gameCanvas = document.getElementById('gameCanvas');
-    if (gameCanvas) gameCanvas.requestPointerLock();
+    if (IS_MOBILE_CONTROLS) {
+      // No mouse to lock — touch controls run unlocked. Best-effort
+      // landscape lock only (no Fullscreen API — it's unreliable on
+      // pages opened from local/content:// URLs and was causing a
+      // black-screen glitch); the on-screen rotate prompt is the
+      // fallback wherever orientation lock isn't supported.
+      try {
+        if (screen.orientation && screen.orientation.lock) {
+          screen.orientation.lock('landscape').catch(() => {});
+        }
+      } catch (err) { /* ignore — rotate prompt is the fallback */ }
+    } else {
+      const gameCanvas = document.getElementById('gameCanvas');
+      if (gameCanvas) gameCanvas.requestPointerLock();
+    }
   }, 220);
 }
 
@@ -4694,6 +5460,10 @@ function restartGame() {
   gameRunning = true;
   gamePaused  = false;
   document.getElementById('main-menu').style.display = 'none';
+  if (IS_MOBILE_CONTROLS) {
+    const backdrop = document.getElementById('menu-backdrop');
+    if (backdrop) backdrop.style.display = 'none';
+  }
   const sp = randomPlayerSpawn();
   tankRoot.position.set(sp.x, 0, sp.z);
   chassisAngle = 0;
@@ -5592,6 +6362,7 @@ function drawEnemyHPBars() {
 // ── Start ─────────────────────────────────────────────────
 updateHUD();
 tick();
+window.__dbgLog && window.__dbgLog('game script fully executed, tick() started, renderer=' + (typeof renderer !== 'undefined'));
 </script>
 </body>
 </html>
