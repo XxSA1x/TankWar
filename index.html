@@ -300,6 +300,24 @@
       bottom: 36px; right: 132px; left: auto; top: auto;
     }
 
+    /* iOS Safari can mistake a tap on multi-line text content for
+       the start of a text-selection gesture (magnifier/callout)
+       instead of a click — this stops that from ever kicking in on
+       the menu's tappable buttons. Paired with the touchend-based
+       tap handling added in the script for these same elements. */
+    body.mobile-mode .tank-card,
+    body.mobile-mode .map-card,
+    body.mobile-mode .time-card,
+    body.mobile-mode #mm-play-btn,
+    body.mobile-mode .mm-icon-btn,
+    body.mobile-mode #ms-back-btn {
+      -webkit-user-select: none;
+      user-select: none;
+      -webkit-touch-callout: none;
+      -webkit-tap-highlight-color: transparent;
+      touch-action: manipulation;
+    }
+
     /* ── Main menu / map select readability (mobile only) ──────
        The menu is shown as a scaled-down miniature of the desktop
        layout (see #menu-scale-wrap). On very short phone viewports
@@ -812,7 +830,7 @@
     <div id="mm-version-label" style="position:absolute; bottom:18px; right:22px; z-index:2;
       font-family:'Share Tech Mono',monospace; font-size:13px;
       color:rgba(255,255,255,0.35); letter-spacing:1px; pointer-events:none;">
-      TankWar v0.32.0
+      TankWar v0.31.0
     </div>
 
     <!-- Top-left: settings + profile -->
@@ -5121,6 +5139,28 @@ if (IS_MOBILE_CONTROLS) {
     }
     e.preventDefault();
   }, { passive: false });
+
+  // ── iOS Safari fix for the menu's tap-to-select buttons ──────
+  //    Tank cards / map cards / time-of-day cards rely on a plain
+  //    onclick attribute firing from a tap. That works fine on
+  //    Android Chrome, but WebKit on iOS can fail to synthesize the
+  //    click for div-based buttons that contain multiple lines of
+  //    text (e.g. "SCOUT" + "FAST · LOW HP") — it sometimes reads
+  //    the tap as the start of a text-selection gesture instead.
+  //    Buttons with short single-line content (PLAY, the icon
+  //    buttons) aren't affected, which is why only card selection
+  //    was reported broken. Handling touchend directly sidesteps
+  //    WebKit's click synthesis entirely, so it can't fail this way
+  //    on any platform; preventDefault() stops the browser's own
+  //    synthetic click from also firing afterwards (no double-fire).
+  document.querySelectorAll(
+    '.tank-card, .map-card, .time-card, #mm-play-btn, .mm-icon-btn, #ms-back-btn'
+  ).forEach(el => {
+    el.addEventListener('touchend', function(e) {
+      e.preventDefault();
+      this.click();
+    }, { passive: false });
+  });
 }
 
 // ── Game state ────────────────────────────────────────────
